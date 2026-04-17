@@ -93,7 +93,57 @@ export default async function handler(req, res) {
     }
 
     const data = await whisperRes.json();
-    res.status(200).json({ text: data.text || '' });
+    const rawText = (data.text || '').trim();
+
+    // ── HALLUCINATION FILTER ─────────────────────────────
+    // Whisper sometimes returns the prompt content verbatim when audio
+    // is silent or too quiet. Detect and discard these false transcripts.
+
+    // Prompt fingerprint words — if 3+ appear in a short transcript it's likely hallucinated
+    const PROMPT_WORDS = [
+      'vinicius', 'rodrygo', 'casemiro', 'bellingham', 'lewandowski',
+      'pulisic', 'mbapp', 'haaland', 'offside', 'hat-trick', 'kick-off',
+      'stoppage time', 'clean sheet', 'free kick', 'commentary', 'world cup match'
+    ];
+
+    // Common Whisper silence hallucinations
+    const SILENCE_PHRASES = [
+      'thank you for watching',
+      'thanks for watching',
+      'please subscribe',
+      'like and subscribe',
+      'subtitles by',
+      'transcribed by',
+      'www.',
+      '.com',
+    ];
+
+    function isHallucinated(text) {
+      const lower = text.toLowerCase();
+
+      // Reject known silence phrases
+      for (const phrase of SILENCE_PHRASES) {
+        if (lower.includes(phrase)) return true;
+      }
+
+      // Reject if too many prompt words appear in a short text
+      // Real commentary won't pile up 3+ of these in one sentence
+      const words = PROMPT_WORDS.filter(w => lower.includes(w));
+      if (words.length >= 3 && text.length < 200) return true;
+
+      // Reject if text looks like a list of names/terms (commas with no verbs)
+      // e.g. "Mbappé, Vinicius Junior, Rodrygo, Casemiro, Haaland"
+      const commaCount = (text.match(/,/g) || []).length;
+      if (commaCount >= 4 && text.length < 150) return true;
+
+      // Reject very short repetitive text (Whisper stuttering)
+      if (text.length < 8) return true;
+
+      return false;
+    }
+
+    const filteredText = isHallucinated(rawText) ? '' : rawText;
+    res.status(200).json({ text: filteredText });
 
   } catch (err) {
     console.error('Transcription error:', err);
